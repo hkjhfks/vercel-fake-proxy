@@ -14,7 +14,7 @@ function sendHeartbeat(res) {
 }
 
 // 启动心跳定timer
-function startHeartbeat(res, interval = 3000) {
+function startHeartbeat(res, interval = 1000) {
   const heartbeatTimer = setInterval(() => {
     sendHeartbeat(res);
   }, interval);
@@ -147,28 +147,27 @@ module.exports = async (req, res) => {
 
     // 根据客户端请求的 stream 参数决定如何响应
     if (stream) {
-      // 客户端需要流式响应，模拟流式输出
+      // 客户端需要流式响应，在等待期间发送心跳，最后一次性返回内容
       try {
-        // 在后台异步等待模型响应
+        // 获取完整响应内容
         const fullContent = response.data.choices[0].message.content;
-        const chunks = chunkText(fullContent, 10); // 将文本按10个单词分块
 
-        // 模拟逐块发送
-        for (const chunk of chunks) {
-          const sseChunk = {
-            id: `chatcmpl-${Date.now()}`,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: response.data.model || model,
-            choices: [{
-              index: 0,
-              delta: { content: chunk + ' ' }, // 加上空格以获得更好的分词效果
-              finish_reason: null,
-            }],
-          };
-          res.write(formatSSEData(sseChunk));
-          await delay(100); // 模拟打字延迟
-        }
+        // 停止心跳包
+        stopHeartbeat(heartbeatTimer);
+
+        // 一次性发送完整内容
+        const contentChunk = {
+          id: `chatcmpl-${Date.now()}`,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: response.data.model || model,
+          choices: [{
+            index: 0,
+            delta: { content: fullContent },
+            finish_reason: null,
+          }],
+        };
+        res.write(formatSSEData(contentChunk));
 
         // 发送最后一个空块，包含 finish_reason
         const finalChunk = {
