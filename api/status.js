@@ -1,4 +1,4 @@
-export default function handler(req, res) {
+function handler(req, res) {
   // 只允许 GET 请求
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -33,5 +33,5 @@ export default function handler(req, res) {
   res.json(status);
 }
 
-// CommonJS 兼容性导出
+// Vercel 无服务器函数导出
 module.exports = handler;
