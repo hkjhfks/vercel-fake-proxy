@@ -15,9 +15,5 @@
       "src": "/api/(.*)",
       "dest": "/api/$1"
     }
-  ],
-  "env": {
-    "OPENAI_API_KEY": "@openai_api_key",
-    "SOURCE_API_URL": "@source_api_url"
-  }
+  ]
 }
