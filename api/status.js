@@ -1,13 +1,13 @@
-function handler(req, res) {
-  // 只允许 GET 请求
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
+module.exports = async (req, res) => {
   // 设置 CORS 头
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // 只允许 GET 请求
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
   const status = {
     status: 'ok',
@@ -31,7 +31,4 @@ function handler(req, res) {
   };
 
   res.json(status);
-}
-
-// Vercel 无服务器函数导出
-module.exports = handler;
+};

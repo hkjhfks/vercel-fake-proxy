@@ -46,12 +46,7 @@ function formatSSEData(data) {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-async function handler(req, res) {
-  // 只允许 POST 请求
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
+module.exports = async (req, res) => {
   // 设置 CORS 头
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -59,6 +54,11 @@ async function handler(req, res) {
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
+  }
+
+  // 只允许 POST 请求
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
@@ -288,7 +288,4 @@ async function handler(req, res) {
       });
     }
   }
-}
-
-// Vercel 无服务器函数导出
-module.exports = handler;
+};
