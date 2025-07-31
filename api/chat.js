@@ -104,13 +104,13 @@ module.exports = async (req, res) => {
   }
 
   // 准备发送到源 API 的请求体
-  // 强制设置 stream: false，以实现“假流式”
+  // 强制设置 stream: false，以实现"假流式"
   const requestBody = {
     model,
     messages,
     temperature,
-    stream: false, // 核心修改：始终以非流式请求源 API
     ...otherParams,
+    stream: false, // 核心修改：始终以非流式请求源 API（必须放在otherParams之后以覆盖客户端的stream参数）
   };
 
   // 如果 max_tokens 存在，则添加到请求体中
