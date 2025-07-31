@@ -73,6 +73,10 @@ module.exports = async (req, res) => {
     ...otherParams 
   } = req.body;
 
+  // 调试信息：打印客户端请求参数
+  console.log('Client request - stream:', stream);
+  console.log('Client request - otherParams:', JSON.stringify(otherParams, null, 2));
+
   // 验证必需参数
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ 
@@ -119,6 +123,9 @@ module.exports = async (req, res) => {
   }
 
   try {
+    // 调试信息：打印实际发送给源API的请求体
+    console.log('Request to source API:', JSON.stringify(requestBody, null, 2));
+    
     // 向源 API 发起非流式请求
     const response = await axios.post(`${sourceApiUrl}/v1/chat/completions`, requestBody, {
       headers: {
