@@ -122,6 +122,17 @@ module.exports = async (req, res) => {
     requestBody.max_tokens = max_tokens;
   }
 
+  // 如果客户端需要流式响应，立即设置流式响应头并开始心跳
+  let heartbeatTimer = null;
+  if (stream) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    // 立即开始心跳，不等待模型响应
+    heartbeatTimer = startHeartbeat(res);
+  }
+
   try {
     // 调试信息：打印实际发送给源API的请求体
     console.log('Request to source API:', JSON.stringify(requestBody, null, 2));
@@ -136,14 +147,9 @@ module.exports = async (req, res) => {
 
     // 根据客户端请求的 stream 参数决定如何响应
     if (stream) {
-      // 客户端需要流式响应，我们来模拟它
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-
-      const heartbeatTimer = startHeartbeat(res);
-
+      // 客户端需要流式响应，模拟流式输出
       try {
+        // 在后台异步等待模型响应
         const fullContent = response.data.choices[0].message.content;
         const chunks = chunkText(fullContent, 10); // 将文本按10个单词分块
 
@@ -203,13 +209,32 @@ module.exports = async (req, res) => {
   } catch (error) {
     // 处理请求源 API 时发生的错误
     console.error('Error calling source API:', error.response ? error.response.data : error.message);
-    const statusCode = error.response ? error.response.status : 500;
-    const errorResponse = error.response ? error.response.data : { 
-      error: { 
-        message: 'An unexpected error occurred.',
-        type: 'server_error'
-      } 
-    };
-    res.status(statusCode).json(errorResponse);
+    
+    // 如果有心跳在运行，需要先停止
+    if (heartbeatTimer) {
+      stopHeartbeat(heartbeatTimer);
+    }
+    
+    if (stream) {
+      // 流式响应的错误处理
+      const errorPayload = {
+        error: {
+          message: error.response?.data?.error?.message || 'An unexpected error occurred.',
+          type: 'server_error'
+        }
+      };
+      res.write(formatSSEData(errorPayload));
+      res.end();
+    } else {
+      // 非流式响应的错误处理
+      const statusCode = error.response ? error.response.status : 500;
+      const errorResponse = error.response ? error.response.data : { 
+        error: { 
+          message: 'An unexpected error occurred.',
+          type: 'server_error'
+        } 
+      };
+      res.status(statusCode).json(errorResponse);
+    }
   }
 };
