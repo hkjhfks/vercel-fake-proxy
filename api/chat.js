@@ -43,6 +43,9 @@ function chunkText(text, chunkSize = 10) {
 
 // 生成 SSE 格式的数据
 function formatSSEData(data) {
+  if (typeof data === 'string') {
+    return `data: ${data}\n\n`;
+  }
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
@@ -61,231 +64,145 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  try {
-    const { 
-      model = 'gpt-3.5-turbo',
-      messages,
-      temperature = 0.7,
-      max_tokens,
-      stream = false,
-      ...otherParams 
-    } = req.body;
+  const { 
+    model = 'gpt-3.5-turbo',
+    messages,
+    temperature = 0.7,
+    max_tokens,
+    stream = false, // 从请求中获取 stream 参数
+    ...otherParams 
+  } = req.body;
 
-    // 验证必需参数
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ 
-        error: { 
-          message: 'messages is required and must be an array',
-          type: 'invalid_request_error'
-        }
-      });
-    }
-
-    // 获取环境变量
-    const apiKey = process.env.OPENAI_API_KEY;
-    const sourceApiUrl = process.env.SOURCE_API_URL || 'https://api.openai.com';
-
-    if (!apiKey) {
-      return res.status(500).json({ 
-        error: { 
-          message: 'OPENAI_API_KEY environment variable is not set',
-          type: 'server_error'
-        }
-      });
-    }
-
-    // 从请求头获取 API 密钥（如果提供）
-    const authHeader = req.headers.authorization;
-    let requestApiKey = apiKey;
-    
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      requestApiKey = authHeader.substring(7);
-    }
-
-    // 如果不是流式请求，直接转发
-    if (!stream) {
-      try {
-        const response = await axios.post(
-          `${sourceApiUrl}/v1/chat/completions`,
-          {
-            model,
-            messages,
-            temperature,
-            max_tokens,
-            stream: false,
-            ...otherParams
-          },
-          {
-            headers: {
-              'Authorization': `Bearer ${requestApiKey}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        );
-
-        return res.json(response.data);
-      } catch (error) {
-        console.error('API Error:', error.response?.data || error.message);
-        return res.status(error.response?.status || 500).json(
-          error.response?.data || { 
-            error: { 
-              message: 'Internal server error',
-              type: 'server_error'
-            }
-          }
-        );
+  // 验证必需参数
+  if (!messages || !Array.isArray(messages)) {
+    return res.status(400).json({ 
+      error: { 
+        message: 'messages is required and must be an array',
+        type: 'invalid_request_error'
       }
-    }
+    });
+  }
 
-    // 流式请求处理
-    console.log('Processing streaming request...');
+  // 获取环境变量
+  const apiKey = process.env.OPENAI_API_KEY;
+  const sourceApiUrl = process.env.SOURCE_API_URL || 'https://api.openai.com';
 
-    // 设置 SSE 头
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
+  if (!apiKey) {
+    return res.status(500).json({ 
+      error: { 
+        message: 'OPENAI_API_KEY environment variable is not set',
+        type: 'server_error'
+      }
+    });
+  }
 
-    // 启动心跳定时器，每3秒发送一次心跳包
-    const heartbeatTimer = startHeartbeat(res, 3000);
+  // 从请求头获取 API 密钥（如果提供）
+  const authHeader = req.headers.authorization;
+  let requestApiKey = apiKey;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    requestApiKey = authHeader.substring(7);
+  }
 
-    // 监听客户端断开连接
-    req.on('close', () => {
-      console.log('Client disconnected, stopping heartbeat...');
-      stopHeartbeat(heartbeatTimer);
+  // 准备发送到源 API 的请求体
+  // 强制设置 stream: false，以实现“假流式”
+  const requestBody = {
+    model,
+    messages,
+    temperature,
+    stream: false, // 核心修改：始终以非流式请求源 API
+    ...otherParams,
+  };
+
+  // 如果 max_tokens 存在，则添加到请求体中
+  if (max_tokens !== undefined) {
+    requestBody.max_tokens = max_tokens;
+  }
+
+  try {
+    // 向源 API 发起非流式请求
+    const response = await axios.post(`${sourceApiUrl}/v1/chat/completions`, requestBody, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${requestApiKey}`,
+      },
     });
 
-    req.on('error', (err) => {
-      console.error('Request error:', err);
-      stopHeartbeat(heartbeatTimer);
-    });
+    // 根据客户端请求的 stream 参数决定如何响应
+    if (stream) {
+      // 客户端需要流式响应，我们来模拟它
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
 
-    try {
-      // 向源 API 发送非流式请求
-      console.log('Sending request to source API...');
-      
-      const response = await axios.post(
-        `${sourceApiUrl}/v1/chat/completions`,
-        {
-          model,
-          messages,
-          temperature,
-          max_tokens,
-          stream: false,
-          ...otherParams
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${requestApiKey}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 300000 // 5分钟超时
+      const heartbeatTimer = startHeartbeat(res);
+
+      try {
+        const fullContent = response.data.choices[0].message.content;
+        const chunks = chunkText(fullContent, 10); // 将文本按10个单词分块
+
+        // 模拟逐块发送
+        for (const chunk of chunks) {
+          const sseChunk = {
+            id: `chatcmpl-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: response.data.model || model,
+            choices: [{
+              index: 0,
+              delta: { content: chunk + ' ' }, // 加上空格以获得更好的分词效果
+              finish_reason: null,
+            }],
+          };
+          res.write(formatSSEData(sseChunk));
+          await delay(100); // 模拟打字延迟
         }
-      );
 
-      // 停止心跳定时器，因为我们已经收到响应
-      stopHeartbeat(heartbeatTimer);
-      
-      console.log('Received response from source API, starting fake streaming...');
-
-      const fullResponse = response.data;
-      const content = fullResponse.choices[0]?.message?.content || '';
-
-      // 将内容分解为块
-      const chunks = chunkText(content, 8);
-      const totalChunks = chunks.length;
-
-      // 生成唯一 ID
-      const chatId = `chatcmpl-${Date.now()}${Math.random().toString(36).substr(2, 9)}`;
-
-      // 发送开始的流式响应
-      const startChunk = {
-        id: chatId,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: fullResponse.model,
-        choices: [{
-          index: 0,
-          delta: {
-            role: 'assistant',
-            content: ''
-          },
-          finish_reason: null
-        }]
-      };
-
-      res.write(formatSSEData(startChunk));
-      await delay(100);
-
-      // 逐个发送内容块
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk = {
-          id: chatId,
+        // 发送最后一个空块，包含 finish_reason
+        const finalChunk = {
+          id: `chatcmpl-${Date.now()}`,
           object: 'chat.completion.chunk',
           created: Math.floor(Date.now() / 1000),
-          model: fullResponse.model,
+          model: response.data.model || model,
           choices: [{
             index: 0,
-            delta: {
-              content: chunks[i] + (i < totalChunks - 1 ? ' ' : '')
-            },
-            finish_reason: null
-          }]
+            delta: {},
+            finish_reason: response.data.choices[0].finish_reason || 'stop',
+          }],
         };
+        res.write(formatSSEData(finalChunk));
 
-        res.write(formatSSEData(chunk));
-        
-        // 模拟流式延迟
-        await delay(50 + Math.random() * 100);
+        // 发送结束标志
+        res.write(formatSSEData('[DONE]'));
+
+      } catch (error) {
+        console.error('Error during fake stream generation:', error);
+        const errorPayload = {
+          error: {
+            message: 'Error processing response from source API.',
+            type: 'server_error'
+          }
+        };
+        res.write(formatSSEData(errorPayload));
+      } finally {
+        stopHeartbeat(heartbeatTimer);
+        res.end();
       }
 
-      // 发送结束块
-      const endChunk = {
-        id: chatId,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: fullResponse.model,
-        choices: [{
-          index: 0,
-          delta: {},
-          finish_reason: 'stop'
-        }]
-      };
-
-      res.write(formatSSEData(endChunk));
-
-      // 发送完成信号
-      res.write('data: [DONE]\n\n');
-      res.end();
-
-    } catch (error) {
-      // 确保停止心跳定时器
-      stopHeartbeat(heartbeatTimer);
-      
-      console.error('Streaming Error:', error.response?.data || error.message);
-      
-      // 发送错误信息
-      const errorData = {
-        error: {
-          message: error.response?.data?.error?.message || 'Internal server error',
-          type: error.response?.data?.error?.type || 'server_error',
-          code: error.response?.data?.error?.code || null
-        }
-      };
-
-      res.write(formatSSEData(errorData));
-      res.end();
+    } else {
+      // 客户端需要非流式响应，直接返回结果
+      res.status(200).json(response.data);
     }
 
   } catch (error) {
-    console.error('Handler Error:', error);
-    
-    if (!res.headersSent) {
-      return res.status(500).json({ 
-        error: { 
-          message: 'Internal server error',
-          type: 'server_error'
-        }
-      });
-    }
+    // 处理请求源 API 时发生的错误
+    console.error('Error calling source API:', error.response ? error.response.data : error.message);
+    const statusCode = error.response ? error.response.status : 500;
+    const errorResponse = error.response ? error.response.data : { 
+      error: { 
+        message: 'An unexpected error occurred.',
+        type: 'server_error'
+      } 
+    };
+    res.status(statusCode).json(errorResponse);
   }
 };
