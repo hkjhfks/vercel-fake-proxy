@@ -267,50 +267,47 @@ async function handleFakeStreaming(request, targetUrl, modifiedBody) {
 // --- Universal Handler ---
 
 async function handler(request) {
-    // Parse request URL to get target address and potential path
-    const requestUrlString = request.url;
-    const dollarIndex = requestUrlString.indexOf('$');
-
-    let baseUrlString, extraPath = '';
-    if (dollarIndex !== -1) {
-        baseUrlString = requestUrlString.substring(0, dollarIndex);
-        extraPath = requestUrlString.substring(dollarIndex + 1); // Remove '$' symbol
-    } else {
-        baseUrlString = requestUrlString;
-        // If no '$', assume the full path is part of the 'address' parameter for simplicity
-        // or handle differently if needed (e.g., require '$' for proxying)
-    }
-
-    const url = new URL(baseUrlString);
-    const address = url.searchParams.get('address');
+    // --- New, more robust URL parsing logic ---
+    const requestUrl = new URL(request.url);
+    const address = requestUrl.searchParams.get('address');
 
     // Basic validation for the address parameter
     if (!address) {
-        // Check if it's just a root request to the proxy itself (e.g., health check)
-        if (url.pathname === '/' && !url.search) {
+        if (requestUrl.pathname === '/' && !requestUrl.search) {
            return new Response("Universal Fake Streaming Proxy is running.", { status: 200, headers: { 'Content-Type': 'text/plain'} });
         }
         return new Response('Missing target address parameter (`?address=...`)', { status: 400 });
     }
-     try {
-       // Validate target address is a valid URL structure
-       new URL(address);
-     } catch (_) {
+
+    // The rest of the path is now extracted from the pathname, not from a '$' delimited string
+    // Assumes the Vercel function is at the root of the api folder e.g. /api/proxy
+    // We need to strip the function's own path from the start of the pathname.
+    // Example: request pathname is /api/proxy/v1/chat, function file is /api/proxy.js
+    // We want the extraPath to be /v1/chat
+    // A simple way is to expect a known separator. Let's stick to '$' but use it in the path.
+    // New URL Structure: .../api/proxy/$/<actual_path>?address=<base_api>
+    
+    const dollarIndex = requestUrl.pathname.indexOf('$');
+    let extraPath = '';
+    if (dollarIndex !== -1) {
+        extraPath = requestUrl.pathname.substring(dollarIndex + 1);
+    }
+    
+    let targetUrl;
+    try {
+        // Validate and create the base URL from the address parameter
+        const base = new URL(address);
+        // Combine it with the extra path
+        targetUrl = new URL(extraPath, base).href;
+    } catch (_) {
        return new Response('Invalid target address format provided in `?address=` parameter.', { status: 400 });
-     }
-
-
-    // Construct the full target URL
-    // Ensure address doesn't end with '/' if extraPath starts with '/'
-    const fullAddress = address.endsWith('/') && extraPath.startsWith('/')
-        ? address + extraPath.substring(1)
-        : (address.endsWith('/') || extraPath.startsWith('/') ? address + extraPath : address + '/' + extraPath);
-
+    }
+    
+    // --- End of new parsing logic ---
 
     // Determine if fake streaming logic should be applied
     const isPotentialChatCompletion = request.method === 'POST' &&
-                                      (extraPath.includes('/chat/completions') ||
-                                       fullAddress.includes('/chat/completions')); // Check reasonably
+                                      (targetUrl.includes('/chat/completions'));
 
     let wasOriginallyStreaming = false;
     let modifiedBodyContent = null;
@@ -322,46 +319,42 @@ async function handler(request) {
             const requestClone = request.clone(); // Clone to read body non-destructively
             const bodyText = await requestClone.text();
 
-            if (bodyText && isPotentialChatCompletion) { // Only parse/modify if it's a potential completion request
+            if (bodyText && isPotentialChatCompletion) {
                 try {
                    const parsedBody = JSON.parse(bodyText);
                    wasOriginallyStreaming = parsedBody.stream === true;
 
                    if (wasOriginallyStreaming) {
-                       console.log(`[Handler] Detected stream=true for ${fullAddress}. Modifying request.`);
+                       console.log(`[Handler] Detected stream=true for ${targetUrl}. Modifying request.`);
                        parsedBody.stream = false;
                        modifiedBodyContent = JSON.stringify(parsedBody);
                    } else {
-                       console.log(`[Handler] Detected stream=false/absent for ${fullAddress}. Passing through body.`);
-                       modifiedBodyContent = bodyText; // Use original body if not streaming
+                       console.log(`[Handler] Detected stream=false/absent for ${targetUrl}. Passing through body.`);
+                       modifiedBodyContent = bodyText;
                    }
                  } catch (jsonError) {
-                      // If body is not valid JSON, treat as passthrough
-                      console.warn(`[Handler] Request body for POST ${fullAddress} is not valid JSON. Passing through raw body.`, jsonError.message);
+                      console.warn(`[Handler] Request body for POST ${targetUrl} is not valid JSON. Passing through raw body.`, jsonError.message);
                       modifiedBodyContent = bodyText;
-                      wasOriginallyStreaming = false; // Cannot be streaming if not valid JSON with stream flag
+                      wasOriginallyStreaming = false;
                  }
             } else if (bodyText) {
-                // For non-chat completion POSTs with bodies, just pass the body text
                  modifiedBodyContent = bodyText;
-            } // else bodyText is empty
+            }
 
         } catch (bodyError) {
-            console.error(`[Handler] Error reading request body for ${fullAddress}:`, bodyError);
+            console.error(`[Handler] Error reading request body for ${targetUrl}:`, bodyError);
             return new Response(`Error reading request body: ${bodyError.message}`, { status: 400 });
         }
     }
 
     // Route to fake streaming or passthrough
     if (isPotentialChatCompletion && wasOriginallyStreaming) {
-        return handleFakeStreaming(request, fullAddress, modifiedBodyContent);
+        return handleFakeStreaming(request, targetUrl, modifiedBodyContent);
     } else {
-        // Use modifiedBodyContent if available, else original request.body only if we detected it had one
         const bodyForPassthrough = modifiedBodyContent !== null ? modifiedBodyContent : (requestHadBody ? request.body : null);
-        return handlePassthrough(request, fullAddress, bodyForPassthrough);
+        return handlePassthrough(request, targetUrl, bodyForPassthrough);
     }
 }
-
 
 // --- Platform Compatibility Boilerplate ---
 
