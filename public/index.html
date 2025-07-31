@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>假流式代理测试</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+        input, textarea, select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .response {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            background: #f8f9fa;
+            border-left: 4px solid #007bff;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            min-height: 100px;
+        }
+        .error {
+            border-left-color: #dc3545;
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .loading {
+            border-left-color: #ffc107;
+            background: #fff3cd;
+        }
+        .stream-chunk {
+            padding: 2px 0;
+            border-bottom: 1px dotted #ddd;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>假流式代理测试页面</h1>
+        <p>这个页面可以测试你的假流式代理是否正常工作。</p>
+
+        <form id="testForm">
+            <div class="form-group">
+                <label for="apiKey">API 密钥:</label>
+                <input type="password" id="apiKey" placeholder="输入你的 API 密钥">
+            </div>
+
+            <div class="form-group">
+                <label for="model">模型:</label>
+                <select id="model">
+                    <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+                    <option value="gpt-4">gpt-4</option>
+                    <option value="gpt-4-turbo-preview">gpt-4-turbo-preview</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="message">消息内容:</label>
+                <textarea id="message" placeholder="输入你想要发送的消息...">你好，请介绍一下你自己。</textarea>
+            </div>
+
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="stream" checked> 启用流式响应
+                </label>
+            </div>
+
+            <button type="submit" id="sendBtn">发送请求</button>
+        </form>
+
+        <div id="response" class="response" style="display: none;"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('testForm');
+        const responseDiv = document.getElementById('response');
+        const sendBtn = document.getElementById('sendBtn');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const apiKey = document.getElementById('apiKey').value;
+            const model = document.getElementById('model').value;
+            const message = document.getElementById('message').value;
+            const stream = document.getElementById('stream').checked;
+
+            if (!apiKey || !message) {
+                alert('请填写 API 密钥和消息内容');
+                return;
+            }
+
+            responseDiv.style.display = 'block';
+            responseDiv.className = 'response loading';
+            responseDiv.textContent = '正在发送请求...';
+            sendBtn.disabled = true;
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        messages: [
+                            { role: 'user', content: message }
+                        ],
+                        stream: stream,
+                        temperature: 0.7
+                    })
+                });
+
+                if (!stream) {
+                    // 非流式响应
+                    const data = await response.json();
+                    responseDiv.className = 'response';
+                    responseDiv.textContent = JSON.stringify(data, null, 2);
+                } else {
+                    // 流式响应
+                    responseDiv.className = 'response';
+                    responseDiv.innerHTML = '<div><strong>流式响应:</strong></div>';
+                    
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop(); // 保留最后一个不完整的行
+
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                const data = line.slice(6);
+                                if (data === '[DONE]') {
+                                    const doneDiv = document.createElement('div');
+                                    doneDiv.className = 'stream-chunk';
+                                    doneDiv.innerHTML = '<strong>[完成]</strong>';
+                                    responseDiv.appendChild(doneDiv);
+                                    continue;
+                                }
+
+                                try {
+                                    const parsed = JSON.parse(data);
+                                    const content = parsed.choices?.[0]?.delta?.content || '';
+                                    
+                                    if (content) {
+                                        const chunkDiv = document.createElement('div');
+                                        chunkDiv.className = 'stream-chunk';
+                                        chunkDiv.textContent = content;
+                                        responseDiv.appendChild(chunkDiv);
+                                    }
+                                } catch (e) {
+                                    console.error('解析失败:', data);
+                                }
+                            }
+                        }
+                    }
+                }
+
+            } catch (error) {
+                responseDiv.className = 'response error';
+                responseDiv.textContent = `错误: ${error.message}`;
+            } finally {
+                sendBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
